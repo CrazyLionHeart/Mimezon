@@ -1,7 +1,7 @@
 # Mimezone
 Parse and recovery Nextcloude object storage
 
-![Status](https://github.com/CrazyLionHeart/Mimezon/workflows/Python application/badge.svg)
+![Status](https://github.com/CrazyLionHeart/Mimezon/workflows/Python%20application/badge.svg)
 
 
 ### Long story short
