@@ -178,16 +178,16 @@ def møve(q):
                     if extension:
                         extension.sort()
                         ext = extension[-1][1:]
-                        item_name = "%s.%s" % (key["Key"], ext)
                     elif content_type == "application/gzip":
                         ext = "gz"
-                        item_name = "%s.%s" % (key["Key"], ext)
                     elif content_type == "application/CDFV2":
                         ext = "doc"
-                        item_name = "%s.%s" % (key["Key"], ext)
                     elif content_type == "text/x-shellscript":
                         ext = "sh"
-                        item_name = "%s.%s" % (key["Key"], ext)
+                    elif content_type == "video/mp4":
+                        ext = "mp4"
+
+                    item_name = "%s.%s" % (key["Key"], ext)
                 else:
                     logging.info("Unknown content-type: %s", content_type)
                     item_name = key["Key"]
