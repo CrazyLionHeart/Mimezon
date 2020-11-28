@@ -59,12 +59,12 @@ def iterate_bucket_items(bucket, start_with=""):
                     yield item
                 else:
                     if item["Key"].startswith(start_with):
-                        log.info("Found %s", start_with)
+                        logging.info("Found %s", start_with)
                         start_with = None
                         yield item
                     else:
                         continue
-            log.info("Go to next page")
+            logging.info("Go to next page")
             if page.get("NextContinuationToken"):
                 with open("token.txt", "w") as f:
                     f.write(page["NextContinuationToken"])
@@ -130,12 +130,98 @@ class S3File(io.RawIOBase):
         return True
 
 
+def proccessing(key, source_bucket_name, target_bucket_name, q):
+    s3 = boto3.resource("s3")
+    bytes_buffer = io.BytesIO()
+
+    mime = magic.Magic(mime=True)
+
+    s3_object = s3.Object(bucket_name=source_bucket_name, key=key["Key"])
+
+    s3_file = S3File(s3_object)
+
+    if key["Size"] > 1024:
+        buff = s3_file.read(1024)
+    elif key["Size"] == 0:
+        logging.info("%(Key)s is empty - do nothing", key)
+        q.task_done()
+        return
+    else:
+        buff = s3_file.read()
+
+    logging.info("Parse %(Key)s file", key)
+
+    content_type = mime.from_buffer(buff)  # 'application/pdf'
+
+    old_datetime = key["LastModified"]
+
+    logging.debug("Detect content-type: %s", content_type)
+    logging.debug("Detect last update: %s", old_datetime)
+
+    s3_object.metadata.update({"last_modified": old_datetime.isoformat()})
+
+    if content_type != "application/octet-stream":
+        extension = mimetypes.guess_all_extensions(content_type)
+        if extension:
+            extension.sort()
+            ext = extension[-1][1:]
+        elif content_type == "application/gzip":
+            ext = "gz"
+        elif content_type == "application/CDFV2":
+            ext = "doc"
+        elif content_type == "text/x-shellscript":
+            ext = "sh"
+        elif content_type == "video/mp4":
+            ext = "mp4"
+
+        item_name = "%s.%s" % (key["Key"], ext)
+    else:
+        logging.info("Unknown content-type: %s", content_type)
+        item_name = key["Key"]
+
+    new_object = s3.Object(
+        bucket_name=target_bucket_name,
+        key="recovery/%s/%s" % (old_datetime.strftime("%Y/%m/%d"), item_name),
+    )
+
+    try:
+        new_object.load()
+    except botocore.exceptions.ClientError as ex:
+        if ex.response["Error"]["Code"] == "404":
+            # The object does not exist.
+            new_object.copy_from(
+                CopySource={
+                    "Bucket": source_bucket_name,
+                    "Key": key["Key"],
+                },
+                MetadataDirective="REPLACE",
+                ContentType=content_type,
+                Metadata=s3_object.metadata,
+            )
+            logging.info("Done")
+            q.task_done()
+            return True
+        else:
+            logging.error("Something else broken on key %(Key)s", key)
+            # Something else has gone wrong.
+            logging.exception(ex)
+            q.task_done()
+            return True
+    else:
+        # The object does exist.
+        logging.info("File %(Key)s already present", key)
+        q.task_done()
+        return True
+
+
 def møve(q):
     logging.info("PID: %s, working", getpid())
+    from __main__ import proccessing
 
     while True:
         data = q.get()
         if not data:
+            q.task_done()
             break
 
         source_bucket_name, target_bucket_name, key = data
@@ -144,87 +230,7 @@ def møve(q):
         retries = 10
         for attempt in range(retries):
             try:
-                s3 = boto3.resource("s3")
-                bytes_buffer = io.BytesIO()
-
-                mime = magic.Magic(mime=True)
-
-                s3_object = s3.Object(bucket_name=source_bucket_name, key=key["Key"])
-
-                s3_file = S3File(s3_object)
-
-                if key["Size"] > 1024:
-                    buff = s3_file.read(1024)
-                elif key["Size"] == 0:
-                    logging.info("%(Key)s is empty - do nothing", key)
-                    q.task_done()
-                    break
-                else:
-                    buff = s3_file.read()
-
-                logging.info("Parse %(Key)s file", key)
-
-                content_type = mime.from_buffer(buff)  # 'application/pdf'
-
-                old_datetime = key["LastModified"]
-
-                logging.debug("Detect content-type: %s", content_type)
-                logging.debug("Detect last update: %s", old_datetime)
-
-                s3_object.metadata.update({"last_modified": old_datetime.isoformat()})
-
-                if content_type != "application/octet-stream":
-                    extension = mimetypes.guess_all_extensions(content_type)
-                    if extension:
-                        extension.sort()
-                        ext = extension[-1][1:]
-                    elif content_type == "application/gzip":
-                        ext = "gz"
-                    elif content_type == "application/CDFV2":
-                        ext = "doc"
-                    elif content_type == "text/x-shellscript":
-                        ext = "sh"
-                    elif content_type == "video/mp4":
-                        ext = "mp4"
-
-                    item_name = "%s.%s" % (key["Key"], ext)
-                else:
-                    logging.info("Unknown content-type: %s", content_type)
-                    item_name = key["Key"]
-
-                new_object = s3.Object(
-                    bucket_name=target_bucket_name,
-                    key="recovery/%s/%s"
-                    % (old_datetime.strftime("%Y/%m/%d"), item_name),
-                )
-
-                try:
-                    new_object.load()
-                except botocore.exceptions.ClientError as ex:
-                    if ex.response["Error"]["Code"] == "404":
-                        # The object does not exist.
-                        new_object.copy_from(
-                            CopySource={
-                                "Bucket": source_bucket_name,
-                                "Key": key["Key"],
-                            },
-                            MetadataDirective="REPLACE",
-                            ContentType=content_type,
-                            Metadata=s3_object.metadata,
-                        )
-                        logging.info("Done")
-                        q.task_done()
-                        break
-                    else:
-                        logging.error("Something else broken on key %(Key)s", key)
-                        # Something else has gone wrong.
-                        logging.exception(ex)
-                        q.task_done()
-                        break
-                else:
-                    # The object does exist.
-                    logging.info("File %(Key)s already present", key)
-                    q.task_done()
+                if proccessing(key, source_bucket_name, target_bucket_name, q):
                     break
             except (
                 botocore.vendored.requests.exceptions.ConnectionError,
@@ -233,7 +239,7 @@ def møve(q):
                 ConnectionRefusedError,
             ) as e:
                 backoff = (2 ** attempt) * 10
-                log.info("Go to sleep %s", backoff)
+                logging.info("Go to sleep %s", backoff)
                 time.sleep(backoff)
 
 
@@ -252,12 +258,12 @@ def transfer(args):
         t.start()
         threads.append(t)
 
-    log.debug("Source bucket name: %s", source_bucket_name)
-    log.debug("Target bucket name: %s", target_bucket_name)
-    log.debug("Start iterate from: %s", start_with)
+    logging.debug("Source bucket name: %s", source_bucket_name)
+    logging.debug("Target bucket name: %s", target_bucket_name)
+    logging.debug("Start iterate from: %s", start_with)
 
     if not source_bucket_name or not target_bucket_name:
-        log.error("Args not defined")
+        logging.error("Args not defined")
         raise Exception("Args for processing not defined")
 
     for iter_key in iterate_bucket_items(source_bucket_name, start_with=start_with):
@@ -266,7 +272,7 @@ def transfer(args):
     # block until all tasks are done
     q.join()
 
-    log.info("stopping workers!")
+    logging.info("stopping workers!")
 
     # stop workers
     for i in range(num_worker_threads):
@@ -278,16 +284,9 @@ def transfer(args):
 
 if __name__ == "__main__":
 
-    log = logging.getLogger()
-    log.setLevel(logging.INFO)
+    formatter = "[%(asctime)s][%(levelname)s] %(name)s %(filename)s:%(funcName)s:%(lineno)d %(threadName)s | %(message)s"
 
-    formatter = logging.Formatter(
-        "[%(asctime)s][%(levelname)s] %(name)s %(filename)s:%(funcName)s:%(lineno)d %(relativeCreated)6d %(threadName)s | %(message)s"
-    )
-
-    zabbix_handler = logging.StreamHandler(sys.stdout)
-    zabbix_handler.setFormatter(formatter)
-    log.addHandler(zabbix_handler)
+    logging.basicConfig(level=logging.DEBUG, format=formatter)
 
     parser = argparse.ArgumentParser(
         prog=__file__,
