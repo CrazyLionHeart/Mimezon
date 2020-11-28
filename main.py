@@ -136,7 +136,7 @@ def møve(q):
     while True:
         data = q.get()
         if not data:
-            continue
+            break
 
         source_bucket_name, target_bucket_name, key = data
 
