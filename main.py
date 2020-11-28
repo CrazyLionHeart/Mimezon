@@ -286,7 +286,7 @@ if __name__ == "__main__":
 
     formatter = "[%(asctime)s][%(levelname)s] %(name)s %(filename)s:%(funcName)s:%(lineno)d %(threadName)s | %(message)s"
 
-    logging.basicConfig(level=logging.DEBUG, format=formatter)
+    logging.basicConfig(level=logging.INFO, format=formatter)
 
     parser = argparse.ArgumentParser(
         prog=__file__,
